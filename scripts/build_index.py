@@ -18,9 +18,10 @@ Usage:
 """
 
 from __future__ import annotations
-
+from typing import TypedDict, Literal, overload
 import argparse
 import ast
+import hashlib
 import json
 import re
 import sys
@@ -67,6 +68,20 @@ URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 # --- Pydantic models ---------------------------------------------------------
 
+
+class MetaBlockBase(TypedDict, total=False):
+    generated_at: str
+    generator_version: str
+    schema_version: str
+    shards: dict[str, dict[str, Any]] | None  # per-category shard metadata
+    # For provenance: a hash of all the input files that went into this build.
+    input_hash: str
+
+class DriverIndexMeta(MetaBlockBase):
+    total_drivers: int
+
+class DeviceIndexMeta(MetaBlockBase):
+    total_devices: int
 
 class HelpBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1245,16 +1260,75 @@ def _entry_dict(entry: DriverEntry) -> dict[str, Any]:
     return d
 
 
-def _meta_block(now: str, total_key: str, total: int, **extra: Any) -> dict[str, Any]:
-    block = {
-        "generated_at": now,
-        "generator_version": GENERATOR_VERSION,
-        "schema_version": SCHEMA_VERSION,
-        total_key: total,
-        "shards": None,
-    }
-    block.update(extra)
-    return block
+def _get_file_hash(*files: Path) -> str:
+    """Hash the contents of one or more files, for provenance in the index metadata."""
+    hasher = hashlib.sha256()
+    for file in files:
+        hasher.update(file.read_bytes())
+    return hasher.hexdigest()[:16]
+
+
+def _combine_hashes(*hashes: str) -> str:
+    """Combine one or more 16-char hashes into a single hash string."""
+    hasher = hashlib.sha256()
+    for h in hashes:
+        hasher.update(h.encode("utf-8"))
+    return hasher.hexdigest()[:16]
+
+
+def _get_driver_hash(entry: DriverEntry, repo_root: Path) -> str:
+    """Hash the driver YAML and any companion Python file, for provenance in the index metadata."""
+    entry_file = repo_root / entry.file
+    if entry.format == "avcdriver":
+        return _get_file_hash(entry_file)
+    elif entry.format == "python":
+        entry_file = repo_root / entry.file
+        if entry_file.suffix != ".py":
+            raise ValueError(f"unexpected driver file format {entry.format} for {entry.file}")
+        companion_file = entry_file.with_name(entry_file.stem + "_discovery.py")
+        simulator_file = entry_file.with_name(entry_file.stem + "_sim.py")
+        files_to_hash = [entry_file]
+        if companion_file.is_file():
+            files_to_hash.append(companion_file)
+        if simulator_file.is_file():
+            files_to_hash.append(simulator_file)
+        return _get_file_hash(*files_to_hash)
+    raise ValueError(f"unexpected driver file format {entry.format} for {entry.file}")
+
+
+
+@overload
+def _meta_block(now: str, total_key: Literal["total_drivers"], total: int, input_hash: str, **extra: Any) -> DriverIndexMeta: ...
+@overload
+def _meta_block(now: str, total_key: Literal["total_devices"], total: int, input_hash: str, **extra: Any) -> DeviceIndexMeta: ...
+def _meta_block(
+    now: str,
+    total_key: Literal["total_drivers", "total_devices"],
+    total: int,
+    input_hash: str,
+    **extra: Any
+) -> DriverIndexMeta | DeviceIndexMeta:
+    if total_key == "total_drivers":
+        return DriverIndexMeta(
+            generated_at=now,
+            generator_version=GENERATOR_VERSION,
+            schema_version=SCHEMA_VERSION,
+            total_drivers=total,
+            shards=None,
+            input_hash=input_hash,
+            **extra,
+        )
+    elif total_key == "total_devices":
+        return DeviceIndexMeta(
+            generated_at=now,
+            generator_version=GENERATOR_VERSION,
+            schema_version=SCHEMA_VERSION,
+            total_devices=total,
+            shards=None,
+            input_hash=input_hash,
+            **extra,
+        )
+    raise ValueError(f"invalid total_key {total_key!r} in _meta_block")
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -1273,21 +1347,58 @@ def write_outputs(
         entries, key=lambda e: (e.manufacturer.lower(), e.name.lower())
     )
     entry_dicts = [_entry_dict(e) for e in sorted_entries]
+    entry_hashes = [_get_driver_hash(e, repo_root) for e in sorted_entries]
+    entry_hashes_by_driver_id = {e.id: h for e, h in zip(sorted_entries, entry_hashes)}
+    combined_hash = _combine_hashes(*entry_hashes)
+
+    def _get_hashes_for_driver_ids(*driver_ids: str) -> str|None:
+        hashes = []
+        for driver_id in driver_ids:
+            if driver_id and driver_id in entry_hashes_by_driver_id:
+                hashes.append(entry_hashes_by_driver_id[driver_id])
+        return _combine_hashes(*hashes) if hashes else None
+
+    def _get_hash_for_device_entry(device_entry: dict[str, Any]) -> str|None:
+        driver_ids = [d.get("id") for d in device_entry.get("drivers", []) if d.get("id")]
+        return _get_hashes_for_driver_ids(*driver_ids)
+
+    index_json_file = repo_root / "index.json"
+    index_now = now
+    if index_json_file.exists():
+        existing_data = json.loads(index_json_file.read_text(encoding="utf-8"))
+        existing_hash = existing_data.get("_meta", {}).get("input_hash")
+        if existing_hash and existing_hash == combined_hash:
+            index_now = existing_data["_meta"]["generated_at"]
 
     # index.json
     _write_json(
-        repo_root / "index.json",
+        index_json_file,
         {
-            "_meta": _meta_block(now, "total_drivers", len(entry_dicts)),
+            "_meta": _meta_block(index_now, "total_drivers", len(entry_dicts), combined_hash),
             "drivers": entry_dicts,
         },
     )
+
+    device_hashes = []
+    for device in devices:
+        device_hash = _get_hash_for_device_entry(device)
+        if device_hash:
+            device_hashes.append(device_hash)
+    combined_device_hash = _combine_hashes(*device_hashes) if device_hashes else ""
+
+    devices_json_file = repo_root / "devices.json"
+    devices_now = now
+    if devices_json_file.exists():
+        existing_data = json.loads(devices_json_file.read_text(encoding="utf-8"))
+        existing_hash = existing_data.get("_meta", {}).get("input_hash")
+        if existing_hash and existing_hash == combined_device_hash:
+            devices_now = existing_data["_meta"]["generated_at"]
 
     # devices.json
     _write_json(
         repo_root / "devices.json",
         {
-            "_meta": _meta_block(now, "total_devices", len(devices)),
+            "_meta": _meta_block(devices_now, "total_devices", len(devices), combined_device_hash),
             "devices": devices,
         },
     )
@@ -1295,11 +1406,20 @@ def write_outputs(
     # Per-category driver shards
     for cat in DRIVER_CATEGORIES:
         shard = [d for d in entry_dicts if d["category"] == cat]
+        shard_hashes = [_get_driver_hash(e, repo_root) for e in sorted_entries if e.category == cat]
+        combined_shard_hash = _combine_hashes(*shard_hashes)
+        json_file = repo_root / "index" / f"{cat}.json"
+        category_now = now
+        if json_file.exists():
+            existing_data = json.loads(json_file.read_text(encoding="utf-8"))
+            existing_hash = existing_data.get("_meta", {}).get("input_hash")
+            if existing_hash and existing_hash == combined_shard_hash:
+                category_now = existing_data["_meta"]["generated_at"]
         _write_json(
-            repo_root / "index" / f"{cat}.json",
+            json_file,
             {
                 "_meta": _meta_block(
-                    now, "total_drivers", len(shard), category=cat
+                    category_now, "total_drivers", len(shard), combined_shard_hash, category=cat
                 ),
                 "drivers": shard,
             },
@@ -1308,11 +1428,20 @@ def write_outputs(
     # Per-category device shards
     for cat in DRIVER_CATEGORIES:
         shard = [d for d in devices if d.get("category") == cat]
+        shard_hashes = [_get_hash_for_device_entry(d) or "" for d in shard]
+        combined_shard_hash = _combine_hashes(*shard_hashes)
+        json_file = repo_root / "devices" / f"{cat}.json"
+        cat_now = now
+        if json_file.exists():
+            existing_data = json.loads(json_file.read_text(encoding="utf-8"))
+            existing_hash = existing_data.get("_meta", {}).get("input_hash")
+            if existing_hash and existing_hash == combined_shard_hash:
+                cat_now = existing_data["_meta"]["generated_at"]
         _write_json(
-            repo_root / "devices" / f"{cat}.json",
+            json_file,
             {
                 "_meta": _meta_block(
-                    now, "total_devices", len(shard), category=cat
+                    cat_now, "total_devices", len(shard), combined_shard_hash, category=cat
                 ),
                 "devices": shard,
             },

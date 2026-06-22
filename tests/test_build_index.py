@@ -201,6 +201,89 @@ def test_check_mode_does_not_write(tmp_path: Path) -> None:
     assert not (tmp_path / "devices.json").exists()
 
 
+# --- Index hashing validation ----------------------------------------------
+
+
+def test_index_hash_does_not_change_when_input_unchanged(tmp_path: Path) -> None:
+    _write_manufacturers(tmp_path)
+    _write_yaml_driver(tmp_path)
+    rc, _, err = _run(tmp_path)
+    assert rc == 0, err
+    index1 = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
+    devices1 = json.loads((tmp_path / "devices.json").read_text(encoding="utf-8"))
+
+    # Run again without changing input
+    rc, _, err = _run(tmp_path)
+    assert rc == 0, err
+    index2 = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
+    devices2 = json.loads((tmp_path / "devices.json").read_text(encoding="utf-8"))
+
+    assert index1["_meta"]["input_hash"] == index2["_meta"]["input_hash"]
+    assert devices1["_meta"]["input_hash"] == devices2["_meta"]["input_hash"]
+
+    # Since the hashes are the same, the entire content should be identical (not just the _meta blocks)
+    assert index1 == index2
+    assert devices1 == devices2
+
+
+def test_devices_hashes_do_not_change_when_driver_input_unchanged(tmp_path: Path) -> None:
+    _write_manufacturers(tmp_path)
+    _write_yaml_driver(tmp_path)
+    rc, _, err = _run(tmp_path)
+    assert rc == 0, err
+    devices_filenames = [p for p in (tmp_path / "devices").glob("*.json")]
+    assert len(devices_filenames) > 0
+    devices_hashes1 = {p.name: p.read_text(encoding="utf-8") for p in devices_filenames}
+    devices_texts = {p.name: p.read_text(encoding="utf-8") for p in devices_filenames}
+
+    # Run again without changing input
+    rc, _, err = _run(tmp_path)
+    assert rc == 0, err
+    devices_hashes2 = {p.name: p.read_text(encoding="utf-8") for p in (tmp_path / "devices").glob("*.json")}
+    assert devices_hashes1 == devices_hashes2
+    devices_texts2 = {p.name: p.read_text(encoding="utf-8") for p in (tmp_path / "devices").glob("*.json")}
+    assert devices_texts == devices_texts2
+
+
+def test_category_shard_hashes_do_not_change_when_input_unchanged(tmp_path: Path) -> None:
+    _write_manufacturers(tmp_path)
+    _write_yaml_driver(tmp_path)
+    rc, _, err = _run(tmp_path)
+    assert rc == 0, err
+    index_filenames = [p for p in (tmp_path / "index").glob("*.json")]
+    assert len(index_filenames) > 0
+    index_hashes1 = {p.name: p.read_text(encoding="utf-8") for p in index_filenames}
+    index_texts = {p.name: p.read_text(encoding="utf-8") for p in index_filenames}
+
+    # Run again without changing input
+    rc, _, err = _run(tmp_path)
+    assert rc == 0, err
+    index_hashes2 = {p.name: p.read_text(encoding="utf-8") for p in (tmp_path / "index").glob("*.json")}
+    assert index_hashes1 == index_hashes2
+    index_texts2 = {p.name: p.read_text(encoding="utf-8") for p in (tmp_path / "index").glob("*.json")}
+    assert index_texts == index_texts2
+
+
+def test_index_hash_changes_when_input_changes(tmp_path: Path) -> None:
+    _write_manufacturers(tmp_path)
+    _write_yaml_driver(tmp_path)
+    rc, _, err = _run(tmp_path)
+    assert rc == 0, err
+    index1 = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
+
+    # Mutate input by adding a space to the description
+    _write_yaml_driver(
+        tmp_path,
+        overrides={"description": "Fixture driver for tests. "},  # added space at end
+    )
+
+    rc, _, err = _run(tmp_path)
+    assert rc == 0, err
+    index2 = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
+
+    assert index1["_meta"]["input_hash"] != index2["_meta"]["input_hash"]
+
+
 # --- Field-level validation ------------------------------------------------
 
 
