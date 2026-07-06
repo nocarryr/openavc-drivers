@@ -144,8 +144,6 @@ default_config:
   ssl: true
   verify_ssl: false
   auth_type: "basic"
-  username: "integrator"
-  password: "integrator"
   timeout: 5.0
   poll_interval: 30
 
@@ -162,13 +160,11 @@ config_schema:
     description: "REST API V2 port. Default 4003. The API is HTTPS only."
   username:
     type: string
-    default: "integrator"
     required: true
     label: API Username
     description: "Default is 'integrator'. Change in the Base Unit's web Configurator under Security."
   password:
     type: string
-    default: "integrator"
     required: true
     label: API Password
     description: "Default is 'integrator'. Change in the Base Unit's web Configurator."
