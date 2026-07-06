@@ -211,9 +211,10 @@ state_variables:
     label: Total Uptime (sec)
     help: "Total seconds the Base Unit has run across its lifetime."
   error_code:
-    type: integer
+    type: enum
+    values: ["Ok", "Warning", "Error"]
     label: Error Code
-    help: "Health code. 0 = OK; non-zero means errorMessage will explain."
+    help: "Health code. Warning or Error means errorMessage will explain."
   error_message:
     type: string
     label: Error Message
@@ -221,15 +222,18 @@ state_variables:
 
   # ── Power management (configuration/system/power-management) ──
   system_status:
-    type: string
+    type: enum
+    values: ["On", "Standby"]
     label: System Status
     help: "Base Unit display-output power state — On or Standby."
   power_mode:
-    type: string
+    type: enum
+    values: ["EcoStandby", "NetworkedStandby", "DeepStandby"]
     label: Power Mode
     help: "Selected standby mode: EcoStandby / NetworkedStandby / DeepStandby (set via set_power_mode)."
   standby_timeout:
-    type: string
+    type: enum
+    values: ["Infinite", "1", "5", "10", "15", "30", "45", "60"]
     label: Standby Timeout (min)
     help: "Inactivity timeout before entering standby — 'Infinite' or a numeric string of minutes."
 
@@ -257,13 +261,15 @@ state_variables:
     label: Audio Enabled
     help: "True when audio output is enabled on the Base Unit."
   audio_output:
-    type: string
+    type: enum
+    values: ["DisplayPort", "Jack", "HDMI", "SPDIF"]
     label: Audio Output
     help: "Selected audio output: DisplayPort / Jack / HDMI / SPDIF (Base Unit-dependent)."
 
   # ── Video (configuration/video) ──
   video_mode:
-    type: string
+    type: enum
+    values: ["Extended", "Clone"]
     label: Video Mode
     help: "Dual-output behavior — Extended or Clone (only meaningful on dual-output Base Units)."
   cec_enabled:
