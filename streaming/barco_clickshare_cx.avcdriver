@@ -67,6 +67,7 @@ verified: false
 simulated: true
 protocols: [clickshare_v2]
 ports: [4003]
+min_platform_version: 0.19.0
 
 compatible_models:
   - manufacturer: Barco
@@ -463,66 +464,51 @@ commands:
         required: true
         label: Timeout (min)
 
-# Response patterns. The V2 API returns JSON objects — match by field name.
-# Field names are unique enough across the endpoints we poll that simple
-# per-key regexes don't cross-fire. Notable choices:
-#   - `"status":"(On|Standby)"` (anchored on the two valid values) only
-#     matches the power-management response; per-button "status" values
-#     are Ok / Error / Warning and don't alternate-match.
-#   - `"output":"(DisplayPort|Jack|HDMI|SPDIF)"` is anchored on the audio
-#     output enum so it doesn't capture stray "output" keys elsewhere.
-#   - The wallpaper response is `{"id":N,"md5":"...","name":"..."}` — match
-#     id and name in one regex with two captures so we set both atomically.
+# Response patterns. The V2 API returns JSON objects — match using the `json: true` flag and map fields to state variables.
 responses:
 
   # System status
-  - match: '"currentUptime":\s*(\d+)'
-    set: { current_uptime: "$1" }
-  - match: '"totalUptime":\s*(\d+)'
-    set: { total_uptime: "$1" }
-  - match: '"errorCode":\s*(\d+)'
-    set: { error_code: "$1" }
-  - match: '"errorMessage":"([^"]*)"'
-    set: { error_message: "$1" }
-  - match: '"inUse":(true|false)'
-    set: { in_use: "$1" }
-  - match: '"sharing":(true|false)'
-    set: { sharing: "$1" }
+  - json: true
+    set:
+      current_uptime: { key: currentUptime, type: integer }
+      total_uptime:   { key: totalUptime,   type: integer }
+      error_code:     { key: errorCode }
+      in_use:         { key: inUse,    type: boolean }
+      sharing:        { key: sharing,  type: boolean }
 
   # Power management
-  - match: '"powerMode":"([^"]+)"'
-    set: { power_mode: "$1" }
-  - match: '"standbyTimeout":"([^"]+)"'
-    set: { standby_timeout: "$1" }
-  - match: '"status":"(On|Standby)"'
-    set: { system_status: "$1" }
+  - json: true
+    set:
+      power_mode:       { key: powerMode }
+      standby_timeout:  { key: standbyTimeout }
+      system_status:    { key: status }
 
   # Device identity
-  - match: '"articleNumber":"([^"]+)"'
-    set: { article_number: "$1" }
-  - match: '"modelName":"([^"]+)"'
-    set: { model_name: "$1" }
-  - match: '"productName":"([^"]+)"'
-    set: { product_name: "$1" }
-  - match: '"serialNumber":"([^"]+)"'
-    set: { serial_number: "$1" }
+  - json: true
+    set:
+      article_number: { key: articleNumber }
+      model_name:     { key: modelName }
+      product_name:   { key: productName }
+      serial_number:  { key: serialNumber }
 
   # Audio
-  - match: '"enabled":(true|false),"output":"(DisplayPort|Jack|HDMI|SPDIF)"'
-    set: { audio_enabled: "$1", audio_output: "$2" }
-  - match: '"output":"(DisplayPort|Jack|HDMI|SPDIF)"'
-    set: { audio_output: "$1" }
+  - json: true
+    set:
+      audio_enabled: { key: enabled, type: boolean }
+      audio_output:  { key: output }
 
   # Video — `mode` is unique to the video endpoint among polled responses.
   # `cecEnabled` is anchored to its own field name.
-  - match: '"cecEnabled":(true|false)'
-    set: { cec_enabled: "$1" }
-  - match: '"mode":"(Extended|Clone)"'
-    set: { video_mode: "$1" }
+  - json: true
+    set:
+      video_mode:  { key: mode }
+      cec_enabled: { key: cecEnabled, type: boolean }
 
   # Wallpaper selected — capture id + name in one shot.
-  - match: '"id":\s*(\d+),"md5":"[^"]*","name":"([^"]+)"'
-    set: { selected_wallpaper_id: "$1", selected_wallpaper_name: "$2" }
+  - json: true
+    set:
+      selected_wallpaper_id:   { key: id, type: integer }
+      selected_wallpaper_name: { key: name }
 
 on_connect:
   - query_identity
